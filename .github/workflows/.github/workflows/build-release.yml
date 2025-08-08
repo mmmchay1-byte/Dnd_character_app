@@ -1,0 +1,168 @@
+name: Build Android RELEASE APK (auto-create project + signing)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'dnd_character_sheet.zip'
+      - '.github/workflows/build-release.yml'
+      - 'app_icon.png'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install unzip
+        run: sudo apt-get update && sudo apt-get install -y unzip
+
+      - name: Unzip your source
+        run: |
+          rm -rf src
+          unzip dnd_character_sheet.zip -d src
+          ls -la src || true
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.22.0'
+          channel: 'stable'
+          cache: true
+
+      - name: Create fresh Flutter app skeleton
+        run: |
+          rm -rf app
+          flutter create app
+
+      - name: Move your code into the skeleton
+        run: |
+          rm -rf app/lib && mkdir -p app/lib
+          cp -R src/lib/* app/lib/ || true
+
+          mkdir -p app/assets
+          if [ -d "src/assets" ]; then
+            cp -R src/assets/* app/assets/
+          fi
+
+          if [ -f "src/pubspec.yaml" ]; then
+            rm -f app/pubspec.yaml
+            cp src/pubspec.yaml app/pubspec.yaml
+          fi
+
+          echo "---- pubspec BEFORE patch ----"; cat app/pubspec.yaml || true
+
+          # Normalize environment SDK range
+          sed -i -E "s/^([[:space:]]*sdk:[[:space:]]*)\\^[0-9.]+/\\1'>=3.0.0 <4.0.0'/" app/pubspec.yaml
+          sed -i -E "s/^([[:space:]]*sdk:[[:space:]]*)'>=2\\.[0-9.]+ <3\\.0\\.0'/\\1'>=3.0.0 <4.0.0'/" app/pubspec.yaml
+
+          # Ensure flutter: assets:
+          if ! grep -qE '^flutter:' app/pubspec.yaml; then
+            printf "\nflutter:\n  assets:\n    - assets/\n" >> app/pubspec.yaml
+          else
+            if ! grep -qE '^[[:space:]]+assets:' app/pubspec.yaml; then
+              awk 'BEGIN{p=1}
+                /^flutter:/ {print; print "  assets:\n    - assets/"; p=0; next}
+                {print}
+              ' app/pubspec.yaml > app/_tmp_pubspec.yaml && mv app/_tmp_pubspec.yaml app/pubspec.yaml
+            fi
+          fi
+
+          echo "---- pubspec AFTER patch ----"; cat app/pubspec.yaml || true
+
+      - name: Hotfix imports (HomeScreen -> CharacterSheetScreen)
+        run: |
+          FILE="app/lib/screens/home_screen.dart"
+          if [ -f "$FILE" ]; then
+            if ! grep -q "character_sheet_screen.dart" "$FILE"; then
+              sed -i "1i import 'character_sheet_screen.dart';" "$FILE"
+            fi
+          fi
+
+      # ---- ИКОНКА ПРИЛОЖЕНИЯ ----
+      - name: Add app icon file
+        run: |
+          mkdir -p app/assets
+          if [ -f "app_icon.png" ]; then
+            cp app_icon.png app/assets/icon.png
+          else
+            echo "ERROR: app_icon.png not found in repo root"; exit 1
+          fi
+
+      - name: Configure flutter_launcher_icons in pubspec
+        run: |
+          (cd app && flutter pub add --dev flutter_launcher_icons)
+          if ! grep -q '^flutter_icons:' app/pubspec.yaml; then
+            cat >> app/pubspec.yaml <<'EOF'
+
+flutter_icons:
+  android: true
+  ios: false
+  image_path: assets/icon.png
+  adaptive_icon_foreground: assets/icon.png
+  adaptive_icon_background: "#1B2230"
+EOF
+          fi
+
+      - name: Flutter pub get
+        working-directory: app
+        run: flutter pub get
+
+      - name: Generate launcher icons
+        working-directory: app
+        run: flutter pub run flutter_launcher_icons:main
+
+      # ---- Подпись: используем Secrets, если есть; иначе генерим временный ключ ----
+      - name: Prepare signing (use secrets if provided, else generate one-time keystore)
+        working-directory: app/android
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -e
+          mkdir -p app
+
+          if [ -n "$KEYSTORE_B64" ] && [ -n "$KEYSTORE_PASSWORD" ] && [ -n "$KEY_ALIAS" ] && [ -n "$KEY_PASSWORD" ]; then
+            echo "Using keystore from secrets"
+            echo "$KEYSTORE_B64" | base64 -d > app/keystore.jks
+          else
+            echo "No secrets found. Generating one-time keystore..."
+            KEYSTORE_PASSWORD=androidpass
+            KEY_PASSWORD=androidpass
+            KEY_ALIAS=upload
+            keytool -genkey -v -keystore app/keystore.jks -storepass $KEYSTORE_PASSWORD -alias $KEY_ALIAS -keypass $KEY_PASSWORD -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=DnD, OU=Dev, O=DnD, L=City, S=State, C=US"
+          fi
+
+          cat > key.properties <<EOF
+          storePassword=$KEYSTORE_PASSWORD
+          keyPassword=$KEY_PASSWORD
+          keyAlias=$KEY_ALIAS
+          storeFile=app/keystore.jks
+          EOF
+
+      - name: Build RELEASE APK
+        working-directory: app
+        run: flutter build apk --release
+
+      - name: Upload RELEASE APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release
+          path: app/build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Upload generated keystore (only if secrets were NOT provided)
+        if: ${{ !secrets.KEYSTORE_B64 }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-keystore-jks
+          path: app/android/app/keystore.jks
