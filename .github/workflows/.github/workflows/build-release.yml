@@ -60,7 +60,7 @@ jobs:
 
           echo "---- pubspec BEFORE patch ----"; cat app/pubspec.yaml || true
 
-          # Normalize environment SDK range
+          # Normalize environment SDK range for Flutter 3.x
           sed -i -E "s/^([[:space:]]*sdk:[[:space:]]*)\\^[0-9.]+/\\1'>=3.0.0 <4.0.0'/" app/pubspec.yaml
           sed -i -E "s/^([[:space:]]*sdk:[[:space:]]*)'>=2\\.[0-9.]+ <3\\.0\\.0'/\\1'>=3.0.0 <4.0.0'/" app/pubspec.yaml
 
@@ -87,7 +87,7 @@ jobs:
             fi
           fi
 
-      # ---- ИКОНКА ПРИЛОЖЕНИЯ ----
+      # ---- APP ICON ----
       - name: Add app icon file
         run: |
           mkdir -p app/assets
@@ -120,8 +120,8 @@ EOF
         working-directory: app
         run: flutter pub run flutter_launcher_icons:main
 
-      # ---- Подпись: используем Secrets, если есть; иначе генерим временный ключ ----
-      - name: Prepare signing (use secrets if provided, else generate one-time keystore)
+      # ---- SIGNING (use secrets if provided; else generate one-time keystore) ----
+      - name: Prepare signing
         working-directory: app/android
         env:
           KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
@@ -160,9 +160,22 @@ EOF
           name: app-release
           path: app/build/app/outputs/flutter-apk/app-release.apk
 
-      - name: Upload generated keystore (only if secrets were NOT provided)
+      # Дополнительно прикладываем keystore и его base64, если секретов нет
+      - name: Upload generated keystore (only if no secrets)
         if: ${{ !secrets.KEYSTORE_B64 }}
         uses: actions/upload-artifact@v4
         with:
           name: generated-keystore-jks
           path: app/android/app/keystore.jks
+
+      - name: Also upload base64 of keystore (only if no secrets)
+        if: ${{ !secrets.KEYSTORE_B64 }}
+        working-directory: app/android/app
+        run: base64 keystore.jks > keystore.b64.txt
+
+      - name: Upload keystore.b64.txt (only if no secrets)
+        if: ${{ !secrets.KEYSTORE_B64 }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-keystore-b64
+          path: app/android/app/keystore.b64.txt
