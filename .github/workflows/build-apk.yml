@@ -1,0 +1,85 @@
+name: Build Android APK (auto-create project)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'dnd_character_sheet.zip'
+      - '.github/workflows/build-apk.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install unzip
+        run: sudo apt-get update && sudo apt-get install -y unzip
+
+      - name: Unzip your source
+        run: |
+          rm -rf src
+          unzip dnd_character_sheet.zip -d src
+          ls -la src
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.22.0'
+          channel: 'stable'
+          cache: true
+
+      - name: Flutter doctor (debug info)
+        run: flutter --version
+
+      - name: Create fresh Flutter app skeleton
+        run: |
+          rm -rf app
+          flutter create app
+          ls -la app
+
+      - name: Move your code into the skeleton
+        run: |
+          # Переносим lib/ и assets/ из ZIP в новый проект
+          rm -rf app/lib
+          mkdir -p app/lib
+          cp -R src/lib/* app/lib/
+
+          mkdir -p app/assets
+          if [ -d "src/assets" ]; then
+            cp -R src/assets/* app/assets/
+          fi
+
+          # Заменяем pubspec.yaml нашим
+          if [ -f "src/pubspec.yaml" ]; then
+            rm -f app/pubspec.yaml
+            cp src/pubspec.yaml app/pubspec.yaml
+          fi
+
+          # Правим ограничения SDK (на случай несовместимости)
+          sed -i "s/^\\s*sdk:\\s*.*/  sdk: '>=3.0.0 <4.0.0'/" app/pubspec.yaml
+
+          echo '--- pubspec after patch:'
+          cat app/pubspec.yaml
+
+      - name: Flutter pub get
+        working-directory: app
+        run: flutter pub get
+
+      - name: Build debug APK
+        working-directory: app
+        run: flutter build apk --debug
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug
+          path: app/build/app/outputs/flutter-apk/app-debug.apk
