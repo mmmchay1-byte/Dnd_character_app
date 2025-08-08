@@ -64,11 +64,8 @@ jobs:
             cp src/pubspec.yaml app/pubspec.yaml
           fi
 
-          # Правим ограничения SDK (на случай несовместимости)
-          sed -i "s/^\\s*sdk:\\s*.*/  sdk: '>=3.0.0 <4.0.0'/" app/pubspec.yaml
-
-          echo '--- pubspec after patch:'
-          cat app/pubspec.yaml
+         # Полностью заменяем секцию environment на рабочую
+sed -i '/^environment:/,/^dependencies:/c\environment:\n  sdk: \'>=3.0.0 <4.0.0\'\n\ndependencies:' app/pubspec.yaml
 
       - name: Flutter pub get
         working-directory: app
