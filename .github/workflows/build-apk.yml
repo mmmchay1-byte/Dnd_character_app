@@ -37,7 +37,7 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Flutter doctor (debug info)
+      - name: Flutter version
         run: flutter --version
 
       - name: Create fresh Flutter app skeleton
@@ -48,24 +48,47 @@ jobs:
 
       - name: Move your code into the skeleton
         run: |
-          # Переносим lib/ и assets/ из ZIP в новый проект
-          rm -rf app/lib
-          mkdir -p app/lib
-          cp -R src/lib/* app/lib/
+          # Переносим исходники и ресурсы
+          rm -rf app/lib && mkdir -p app/lib
+          cp -R src/lib/* app/lib/ || true
 
           mkdir -p app/assets
           if [ -d "src/assets" ]; then
             cp -R src/assets/* app/assets/
           fi
 
-          # Заменяем pubspec.yaml нашим
+          # Заменяем pubspec.yaml на твой
           if [ -f "src/pubspec.yaml" ]; then
             rm -f app/pubspec.yaml
             cp src/pubspec.yaml app/pubspec.yaml
           fi
 
-         # Полностью заменяем секцию environment на рабочую
-sed -i '/^environment:/,/^dependencies:/c\environment:\n  sdk: \'>=3.0.0 <4.0.0\'\n\ndependencies:' app/pubspec.yaml
+          echo "---- pubspec BEFORE patch ----"
+          cat app/pubspec.yaml || true
+
+          # ---- Правим environment:sdk на совместимый диапазон ----
+          # Вариант 1: caret ^3.x.x -> '>=3.0.0 <4.0.0'
+          sed -i -E "s/^([[:space:]]*sdk:[[:space:]]*)\\^[0-9.]+/\\1'>=3.0.0 <4.0.0'/" app/pubspec.yaml
+          # Вариант 2: '>=2.x <3.0.0' -> '>=3.0.0 <4.0.0'
+          sed -i -E "s/^([[:space:]]*sdk:[[:space:]]*)'>=2\\.[0-9.]+ <3\\.0\\.0'/\\1'>=3.0.0 <4.0.0'/" app/pubspec.yaml
+
+          # ---- Гарантируем, что секция flutter: содержит assets ----
+          # Если нет строки 'flutter:', добавим её в конец вместе с assets:
+          if ! grep -qE '^flutter:' app/pubspec.yaml; then
+            printf "\nflutter:\n  assets:\n    - assets/\n" >> app/pubspec.yaml
+          else
+            # Если есть flutter:, но нет assets:, аккуратно добавим
+            if ! grep -qE '^[[:space:]]+assets:' app/pubspec.yaml; then
+              # добавим под flutter:
+              awk 'BEGIN{p=1}
+                /^flutter:/ {print; print "  assets:\n    - assets/"; p=0; next}
+                {print}
+              ' app/pubspec.yaml > app/_tmp_pubspec.yaml && mv app/_tmp_pubspec.yaml app/pubspec.yaml
+            fi
+          fi
+
+          echo "---- pubspec AFTER patch ----"
+          cat app/pubspec.yaml || true
 
       - name: Flutter pub get
         working-directory: app
